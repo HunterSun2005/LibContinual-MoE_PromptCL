@@ -1,0 +1,108 @@
+# -------------------------------------------------------------------
+# 1. 数据集与任务设置 (Dataset and Task Settings)
+# -------------------------------------------------------------------
+dataset: 'cifar100'             # 数据集名称
+data_root: 'datasets/cifar100'  # 数据集存储路径
+init_cls_num: 10                # 初始任务(Task 0)包含的类别数量
+inc_cls_num: 10                 # 每个增量任务中新增的类别数量
+task_num: 10                    # 总任务数量
+batch_size: 128                 # 训练时的批次大小
+num_workers: 4                  # 数据加载器使用的工作进程数
+
+# --- 训练集图像变换与数据增强 ---
+# train_trfms:
+#   - RandomCrop :                # 随机裁剪
+#       size : 224                # 裁剪后的图像尺寸
+#       padding : 4               # 在裁剪前先在图像四周填充4个像素
+#   - RandomHorizontalFlip : {}   # 以50%的概率进行随机水平翻转
+#   - ToTensor: {}                # 将图像转换为PyTorch Tensor, 并将像素值归一化到[0, 1]
+#   - Normalize:                  # 对图像进行标准化
+#       mean: [0.5071, 0.4866, 0.4409] # CIFAR-100数据集的R,G,B通道均值
+#       std: [0.2009, 0.1984, 0.2023]  # CIFAR-100数据集的R,G,B通道标准差
+
+# --- 测试集/验证集图像变换 ---
+# test_trfms: 
+#   - ToTensor: {}                # 转换为Tensor并归一化到[0, 1]
+#   - Normalize:                  # 标准化 (必须使用与训练集相同的mean和std)
+#       mean: [0.5071, 0.4866, 0.4409]
+#       std: [0.2009, 0.1984, 0.2023]
+
+# -------------------------------------------------------------------
+# 2. 模型与分类器设置 (Model and Classifier Settings)
+# -------------------------------------------------------------------
+backbone:                       # backbone 在 classifier 内部通过 timm 创建
+  name: vit_base_patch16_224_dino
+  kwargs:
+    pretrained: True            # 是否加载预训练权重
+    pretrained_cfg: None
+    num_classes: 100            # 数据集的总类别数
+    drop_rate: 0.0              # Dropout比率
+    drop_path_rate: 0.0         # DropPath比率
+    mlp_structure: [2]
+
+classifier:
+  name: NoRGA
+  kwargs:
+    feat_dim: 768               # ViT-Base模型的特征维度
+    num_class: 100              # 数据集的总类别数
+    init_cls_num: 10                # 初始任务的类别数量
+    inc_cls_num: 10                 # 每个增量任务中新增的类别数量
+    task_num: 10
+    
+    # --- 使用 timm.create_model 创建模型所需的名称 ---
+    model_name: vit_base_patch16_224_dino             # 可训练模型
+    original_model_name: vit_base_patch16_224_dino    # 教师模型
+    pretrained: True                                  # 是否加载预训练权重
+    drop_rate: 0.0
+    drop_path_rate: 0.0
+    mlp_structure: [2]
+
+    # --- NoRGA 特有的超参数 (将通过 **kwargs 传入) ---
+    length: 5                     # Prompt 的长度
+    size: 10                      # Prompt 池的大小
+    top_k: 1                      # 每次前向传播时选择 top-k 个 prompt
+    embedding_key: 'cls'          # 使用 [CLS] token 作为 prompt 的 key
+    prompt_pool: True             # 是否使用 prompt 池
+    prompt_key: False             # 是否使用 key 来查询 prompt
+    batchwise_prompt: False       # 是否为整个批次选择相同的 prompt
+    head_type: 'token'            # 分类头类型
+    use_prompt_mask: True         # 是否使用 prompt mask
+    distill_lambda: 1.0           # 知识蒸馏损失的权重
+    larger_prompt_lr: True        # 是否为 prompt 参数设置更高的学习率
+    
+    # 冻结可训练模型 (self.network) 的部分层
+    freeze: ['blocks', 'patch_embed', 'cls_token', 'norm', 'pos_embed']
+
+# -------------------------------------------------------------------
+# 3. 优化器与学习率调度器 (Optimizer and LR Scheduler Settings)
+# -------------------------------------------------------------------
+optimizer:
+  name: AdamW                   # 优化器
+  kwargs:
+    lr: 0.015                   # 基础学习率
+    weight_decay: 0.0           # 权重衰减
+    eps: 1e-8                   # AdamW优化器的常数, 防止分母为零
+    betas: [0.9, 0.999]         # AdamW优化器的beta1和beta2参数
+
+lr_scheduler:
+  name: MultiStepLR             # 学习率调度器
+  kwargs:
+    milestones: [10]            # 在哪些 epoch 进行学习率衰减
+    gamma: 0.1                  # 学习率衰减率
+
+# -------------------------------------------------------------------
+# 4. 训练流程控制 (Training Loop Control)
+# -------------------------------------------------------------------
+init_epoch: 20                  # 初始任务 (task 0) 的训练轮数
+epoch: 20                       # 增量任务 (task > 0) 的训练轮数
+val_per_epoch: 10                # 每隔多少轮在验证集上评估一次模型
+testing_times: 1                # 任务结束后，在测试集上重复测试的次数
+
+# -------------------------------------------------------------------
+# 5. 环境与硬件设置 (Environment and Hardware Settings)
+# -------------------------------------------------------------------
+seed: 42                        # 随机种子
+deterministic: True             # 是否使用确定性算法
+n_gpu: 1                        # 使用的 GPU 数量
+device_ids: [1]                 # 使用的 GPU 设备 ID
+save_path: './output/norga_cifar100/' # 日志和模型检查点的保存路径

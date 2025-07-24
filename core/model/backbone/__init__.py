@@ -4,6 +4,7 @@ from .vit import vit_pt_imnet_in21k_adapter
 from .vit_dap import vit_pt_imnet_dap
 
 from .SiNet import SiNet_vit
+from .norga_prompt_vit import vit_base_patch16_224_dino
 
 from .resnet_cbam import *
 from .alexnet import AlexNet_TRGP, AlexNet_API
