@@ -5,4 +5,4 @@ __pycache__
 .venv-3.8/
 /datasets/
 /checkpoints/
-
+/output/

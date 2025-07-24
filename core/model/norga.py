@@ -1,3 +1,19 @@
+"""
+Implementation of NoRGA, combining both the Task-Inference Instructor (TII)
+training phase and the Parameter-Efficient Fine-Tuning (PEFT) phase into
+a single unified class.
+
+The behavior is controlled by the `train_tii_only` flag in the config.
+
+1.  NoRGA (train_tii_only=True): Implements the first stage of training.
+    Its goal is to train a "Task-Inference Instructor" model that can predict
+    which task an input image belongs to.
+
+2.  NoRGA (train_tii_only=False): Implements the second stage (PEFT). It
+    loads the model trained in the first stage as a frozen expert to guide
+    prompt selection during the actual continual learning process.
+"""
+import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -153,7 +169,6 @@ class EPrompt(nn.Module):
 
         return out
     
-
     def get_prompts(self, task_id=-1):
         """
         Return a copy of previous prompts and current prompt
@@ -278,45 +293,52 @@ class NoRGA(Finetune):
         super().__init__(backbone, feat_dim, num_class, **kwargs)
         self.kwargs = kwargs
         self.num_class = num_class
+        self.train_tii_only = self.kwargs.get('train_tii_only', False)
 
-        # 1. Initialize the trainable, prompt-based NoRGA model (self.network).
-        # All necessary parameters are now passed directly to create_model.
-        self.network = create_model(
-            kwargs['model_name'],
-            pretrained=kwargs.get('pretrained', True),
-            num_classes=num_class,
-            drop_rate=kwargs.get('drop_rate', 0.0),
-            drop_path_rate=kwargs.get('drop_path_rate', 0.0),
-            # drop_block_rate=kwargs.get('drop_path_rate', None),
-            prompt_length=kwargs.get('length', 5),
-            embedding_key=kwargs.get('embedding_key', 'cls'),
-            prompt_init=kwargs.get('prompt_key_init', 'uniform'),
-            prompt_pool=kwargs.get('prompt_pool', True),
-            prompt_key=kwargs.get('prompt_key', True),
-            pool_size=kwargs.get('size', 10),
-            top_k=kwargs.get('top_k', 1),
-            batchwise_prompt=kwargs.get('batchwise_prompt', False),
-            prompt_key_init=kwargs.get('prompt_key_init', 'uniform'),
-            head_type=kwargs.get('head_type', 'token'),
-            use_prompt_mask=kwargs.get('use_prompt_mask', False),
-            use_g_prompt=kwargs.get('use_g_prompt', False),
-            g_prompt_length=kwargs.get('g_prompt_length', 5),
-            g_prompt_layer_idx=kwargs.get('g_prompt_layer_idx', []),
-            use_prefix_tune_for_g_prompt=kwargs.get(u'se_prefix_tune_for_g_prompt', False),
-            use_e_prompt=kwargs.get('use_e_prompt', True),
-            e_prompt_layer_idx=kwargs.get('e_prompt_layer_idx', [0, 1, 2, 3, 4]),
-            use_prefix_tune_for_e_prompt=kwargs.get('use_prefix_tune_for_e_prompt', True),
-            same_key_value=kwargs.get('same_key_value', False),
-            gate_act=kwargs.get('gate_act', 'tanh'),
-        )
+        if self.train_tii_only:
+            # --- STAGE 1: TII Initialization ---
+            print("Initializing model in STAGE 1: Task-Inference Instructor (TII) Training Mode.")
+            self.network = backbone
+            self.original_model = None
+        else:
+            # --- STAGE 2: PEFT Initialization ---
+            print("Initializing model in STAGE 2: Parameter-Efficient Fine-Tuning (PEFT) Mode.")
+            print(f"Creating NoRGA-Prompt model '{kwargs['model_name']}' using timm...")
+            self.network = create_model(
+                kwargs['model_name'],
+                pretrained=kwargs.get('pretrained', True),
+                num_classes=num_class,
+                drop_rate=kwargs.get('drop_rate', 0.0),
+                drop_path_rate=kwargs.get('drop_path_rate', 0.0),
+                # drop_block_rate=kwargs.get('drop_path_rate', None),
+                prompt_length=kwargs.get('length', 5),
+                embedding_key=kwargs.get('embedding_key', 'cls'),
+                prompt_init=kwargs.get('prompt_key_init', 'uniform'),
+                prompt_pool=kwargs.get('prompt_pool', True),
+                prompt_key=kwargs.get('prompt_key', True),
+                pool_size=kwargs.get('size', 10),
+                top_k=kwargs.get('top_k', 1),
+                batchwise_prompt=kwargs.get('batchwise_prompt', False),
+                prompt_key_init=kwargs.get('prompt_key_init', 'uniform'),
+                head_type=kwargs.get('head_type', 'token'),
+                use_prompt_mask=kwargs.get('use_prompt_mask', False),
+                use_g_prompt=kwargs.get('use_g_prompt', False),
+                g_prompt_length=kwargs.get('g_prompt_length', 5),
+                g_prompt_layer_idx=kwargs.get('g_prompt_layer_idx', []),
+                use_prefix_tune_for_g_prompt=kwargs.get(u'se_prefix_tune_for_g_prompt', False),
+                use_e_prompt=kwargs.get('use_e_prompt', True),
+                e_prompt_layer_idx=kwargs.get('e_prompt_layer_idx', [0, 1, 2, 3, 4]),
+                use_prefix_tune_for_e_prompt=kwargs.get('use_prefix_tune_for_e_prompt', True),
+                same_key_value=kwargs.get('same_key_value', False),
+                gate_act=kwargs.get('gate_act', 'tanh'),
+            )
 
-        # 2. Initialize the frozen, standard ViT (self.original_model).
-        # This model acts as the teacher for knowledge distillation.
-        self.original_model = backbone
+            # This model acts as the teacher for knowledge distillation.
+            self.original_model = backbone
 
-        # Freeze all parameters of the original reference model.
-        for param in self.original_model.parameters():
-            param.requires_grad = False
+            # Freeze all parameters of the original reference model.
+            for param in self.original_model.parameters():
+                param.requires_grad = False
 
         self.cls_mean = {}
         self.cls_cov = {}
@@ -334,7 +356,8 @@ class NoRGA(Finetune):
         """
         self.task_idx = task_idx
         self.network = self.network.to(self.device)
-        self.original_model = self.original_model.to(self.device)
+        if self.original_model:
+            self.original_model = self.original_model.to(self.device)
         
         # Store class mask and task map for use in inference
         self.target_task_map = {v: k for k, v_list in self.class_mask.items() for v in v_list}
@@ -344,6 +367,10 @@ class NoRGA(Finetune):
             for n, p in self.network.named_parameters():
                 if n.startswith(tuple(self.kwargs['freeze'])):
                     p.requires_grad = False
+
+        if not self.train_tii_only:
+            self._load_tii_checkpoint(task_idx)
+            self._transfer_prompts(task_idx)
         
         # # Define loss functions
         # self.loss_cls = nn.CrossEntropyLoss()
@@ -354,93 +381,223 @@ class NoRGA(Finetune):
         self.loss_cls = nn.CrossEntropyLoss()
         self.orth_lambda = self.kwargs.get('reg', 0.1) # Orthogonality loss weight
 
-    def _orth_loss(self, features, targets):
-        """
-        Calculates orthogonality loss to encourage feature separation.
-        """
-        if not self.cls_mean: # Only apply after first task
-             return 0.
-        
-        # Combine stored class means with current batch features
-        sample_mean = torch.stack(list(self.cls_mean.values()), dim=0).to(self.device)
-        M = torch.cat([sample_mean, features], dim=0)
-        
-        # Calculate similarity matrix and cross-entropy loss against identity
-        sim = torch.matmul(M, M.t()) / 0.8 # Temperature scaling
-        loss = F.cross_entropy(sim, torch.arange(sim.shape[0]).long().to(self.device))
-        return loss
-
     def observe(self, data):
         """
         The core training step for a single batch of data.
         Calculates the total loss and returns results.
         """
-        x, y = data['image'].to(self.device), data['label'].to(self.device)
-        
-        # Instead of predicting a prompt, we directly train the prompt associated with the current task.
-        prompt_id = self.task_idx * torch.ones(x.shape[0], dtype=torch.int64).to(self.device).unsqueeze(-1)
-        output = self.network(x, task_id=self.task_idx, prompt_id=prompt_id, train=True)
-        
-        logits = output['logits']
-        features_curr = output['pre_logits'] # Use pre-logits for orth_loss
-
-        # --- Loss Calculation ---
-        loss_c = self.loss_cls(logits, y)
-        loss_o = self._orth_loss(features_curr, y)
-        total_loss = loss_c + self.orth_lambda * loss_o
-
-        pred = torch.argmax(logits, dim=1)
-        acc = torch.sum(pred == y).item()
-
-        return pred, acc / x.size(0), total_loss
+        if self.train_tii_only:
+            return self._observe_tii(data)
+        else:
+            return self._observe_peft(data)
 
     def inference(self, data, task_id=None):
         """
         The inference/validation step.
         """
-        if task_id is None:
-            task_id = self.task_idx
-
-        x, y = data['image'].to(self.device), data['label'].to(self.device)
-        
-        with torch.no_grad():
-            # --- Stage 1: Predict prompt_id using the original_model ---
-            pretrain_features = self.original_model.forward_features(x)['x']
-            pretrain_logits = self.original_model.head(pretrain_features[:, 0, :])
-
-            # Mask logits to only include classes seen so far
-            mask = []
-            for i in range(task_id + 1):
-                mask.extend(self.class_mask[i])
-
-            not_mask = np.setdiff1d(np.arange(self.num_class), mask)
-            not_mask = torch.tensor(not_mask, dtype=torch.int64).to(self.device)
-            pretrain_logits = pretrain_logits.index_fill(dim=1, index=not_mask, value=float('-inf'))
-            
-            # Predict class and map it to a task_id, which becomes the prompt_id
-            predicted_cls = torch.max(pretrain_logits, dim=1)[1]
-            prompt_id = torch.tensor([self.target_task_map[v.item()] for v in predicted_cls], device=self.device).unsqueeze(-1)
-
-            # --- Stage 2: Get final classification using the predicted prompt_id ---
-            output = self.network(x, task_id=task_id, prompt_id=prompt_id)
-
-        logits = output['logits']
-        pred = torch.argmax(logits, dim=1)
-        acc = torch.sum(pred == y).item()
-        return pred, acc / x.size(0)
+        if self.train_tii_only:
+            return self._inference_tii(data, task_id)
+        else:
+            return self._inference_peft(data, task_id)
 
     def after_task(self, task_idx, buffer, train_loader, test_loaders):
         """
         Perform post-training steps: compute statistics and align classifier.
         """
+        if self.train_tii_only:
+            self._after_task_tii(task_idx, train_loader)
+        else:
+            self._after_task_peft(task_idx, train_loader)
+
+    def get_parameters(self, config):
+        """
+        Provides parameter groups to the optimizer.
+        """
+        if self.train_tii_only:
+            return self.network.parameters()
+        else:
+            if self.kwargs.get('larger_prompt_lr', False):
+                prompt_params = [p for n, p in self.network.named_parameters() if 'prompt' in n and p.requires_grad]
+                other_params = [p for n, p in self.network.named_parameters() if 'prompt' not in n and p.requires_grad]
+                main_lr = config['optimizer']['kwargs']['lr']
+                return [{'params': prompt_params, 'lr': main_lr}, {'params': other_params, 'lr': main_lr * 0.1}]
+            else:
+                return self.network.parameters()
+
+    # -------------------------------------------------------------------
+    # STAGE 1: TII-specific methods
+    # -------------------------------------------------------------------
+    def _observe_tii(self, data):
+        x, y = data['image'].to(self.device), data['label'].to(self.device)
+        
+        # Get standard class logits
+        output = self.network(x)
+        logits = output['logits'] if isinstance(output, dict) else output
+
+        # Mask out logits of classes not in the current task
+        mask = self.class_mask[self.task_idx]
+        not_mask = np.setdiff1d(np.arange(self.num_class), mask)
+        not_mask = torch.tensor(not_mask, dtype=torch.int64).to(self.device)
+        logits = logits.index_fill(dim=1, index=not_mask, value=float('-inf'))
+        
+        # Calculate standard classification loss
+        loss = self.loss_cls(logits, y)
+        
+        pred = torch.argmax(logits, dim=1)
+        acc = torch.sum(pred == y).item()
+        return pred, acc / x.size(0), loss
+
+    def _inference_tii(self, data, task_id=None):
+        if task_id is None:
+            task_id = self.task_idx
+        x, y = data['image'].to(self.device), data['label'].to(self.device)
+        
+        with torch.no_grad():
+            output = self.network(x)
+            logits = output['logits'] if isinstance(output, dict) else output
+        
+        # Standard classification accuracy
+        pred = torch.argmax(logits, dim=1)
+        acc = torch.sum(pred == y).item()
+        
+        # Derived TII accuracy
+        predicted_tasks = torch.tensor([self.target_task_map[v.item()] for v in pred]).to(self.device)
+        ground_truth_tasks = torch.tensor([self.target_task_map[v.item()] for v in y]).to(self.device)
+        tii_acc = torch.sum(predicted_tasks == ground_truth_tasks).item()
+
+        # The Trainer expects a single accuracy value, so we return the primary one (classification acc).
+        # We print the TII accuracy for observation.
+        print(f"TII Accuracy on this batch: {tii_acc / x.size(0):.4f}")
+        
+        return pred, acc / x.size(0)
+
+    def _after_task_tii(self, task_idx, train_loader):
         print('-' * 20)
-        print(f'Post-processing for task {task_idx + 1}')
+        print(f'Post-processing for TII Task {task_idx + 1}')
         print('-' * 20)
         
+        # TII stage also computes statistics and performs classifier alignment
         self._compute_mean_and_cov(train_loader, task_idx)
-        
         if task_idx > 0:
             self._train_classifier_alignment(task_idx)
+
+        save_path = self.kwargs.get('save_path', './output/norga/')
+        save_dir = os.path.join(save_path, 'checkpoints')
+        if not os.path.exists(save_dir):
+            os.makedirs(save_dir)
+        checkpoint_path = os.path.join(save_dir, f'task{task_idx}_tii_checkpoint.pth')
+        torch.save(self.network.state_dict(), checkpoint_path)
+        print(f"================ TII Model for Task {task_idx} saved to {checkpoint_path} ================")
+
+    # -------------------------------------------------------------------
+    # STAGE 2: PEFT-specific methods
+    # -------------------------------------------------------------------
+    def _load_tii_checkpoint(self, task_id):
+        tii_base_path = self.kwargs.get('trained_original_model_path')
+        if tii_base_path:
+            checkpoint_path = os.path.join(tii_base_path, f'task{task_id}_tii_checkpoint.pth')
+            if os.path.exists(checkpoint_path):
+                print(f"Loading TII checkpoint for Task {task_id} from: {checkpoint_path}")
+                tii_state_dict = torch.load(checkpoint_path, map_location=self.device)
+                self.original_model.load_state_dict(tii_state_dict)
+            else:
+                print(f"Warning: TII checkpoint for Task {task_id} not found at {checkpoint_path}. Using previous TII model.")
+
+    def _transfer_prompts(self, task_id):
+        if task_id > 0:
+            print(f"Transferring prompts from Task {task_id - 1} to Task {task_id}")
+            top_k = self.kwargs.get('top_k', 1)
+            use_prefix = self.kwargs.get('use_prefix_tune_for_e_prompt', False)
+            pool_size = self.kwargs.get('size', 0)
+            prev_start, prev_end = (task_id - 1) * top_k, task_id * top_k
+            cur_start, cur_end = prev_end, (task_id + 1) * top_k
+            if cur_end > pool_size:
+                print("Warning: Prompt pool size is not large enough for all tasks. Skipping prompt transfer.")
+                return
+            with torch.no_grad():
+                if use_prefix:
+                    prev_idx, cur_idx = (slice(None), slice(None), slice(prev_start, prev_end)), (slice(None), slice(None), slice(cur_start, cur_end))
+                else:
+                    prev_idx, cur_idx = (slice(None), slice(prev_start, prev_end)), (slice(None), slice(cur_start, cur_end))
+                self.network.e_prompt.prompt.grad.zero_()
+                self.network.e_prompt.prompt[cur_idx] = self.network.e_prompt.prompt[prev_idx]
+
+    def _observe_peft(self, data):
+        x, y = data['image'].to(self.device), data['label'].to(self.device)
+        prompt_id = self.task_idx * torch.ones(x.shape[0], dtype=torch.int64).to(self.device).unsqueeze(-1)
+        output = self.network(x, task_id=self.task_idx, prompt_id=prompt_id, train=True)
+        logits, features_curr = output['logits'], output['pre_logits']
+        # --- Loss Calculation ---
+        loss_c = self.loss_cls(logits, y)
+        loss_o = self._orth_loss(features_curr, y)
+        total_loss = loss_c + self.orth_lambda * loss_o
+        pred = torch.argmax(logits, dim=1)
+        acc = torch.sum(pred == y).item()
+        return pred, acc / x.size(0), total_loss
+
+    def _inference_peft(self, data, task_id=None):
+        if task_id is None: task_id = self.task_idx
+        x, y = data['image'].to(self.device), data['label'].to(self.device)
+        with torch.no_grad():
+            # --- Stage 1: Predict prompt_id using the original_model ---
+            pretrain_features = self.original_model.forward_features(x)['x']
+            pretrain_logits = self.original_model.head(pretrain_features[:, 0])
+            # Mask logits to only include classes seen so far
+            mask = [cls for i in range(task_id + 1) for cls in self.class_mask[i]]
+            not_mask = np.setdiff1d(np.arange(self.num_class), mask)
+            not_mask = torch.tensor(not_mask, dtype=torch.int64).to(self.device)
+            pretrain_logits = pretrain_logits.index_fill(dim=1, index=not_mask, value=float('-inf'))
+            # Predict class and map it to a task_id, which becomes the prompt_id
+            predicted_cls = torch.max(pretrain_logits, dim=1)[1]
+            prompt_id = torch.tensor([self.target_task_map[v.item()] for v in predicted_cls], device=self.device).unsqueeze(-1)
+            # --- Stage 2: Get final classification using the predicted prompt_id ---
+            output = self.network(x, task_id=task_id, prompt_id=prompt_id)
+        logits = output['logits']
+        pred = torch.argmax(logits, dim=1)
+        acc = torch.sum(pred == y).item()
+        return pred, acc / x.size(0)
+
+    def _after_task_peft(self, task_idx, train_loader):
+        print('-' * 20)
+        print(f'Post-processing for PEFT Task {task_idx + 1}')
+        print('-' * 20)
+        self._compute_mean_and_cov(train_loader, task_idx)
+        prompt_momentum = self.kwargs.get('prompt_momentum', 0.01)
+        if prompt_momentum > 0 and task_idx > 0:
+            print(f"Applying prompt momentum ({prompt_momentum}) to Task {task_idx} prompts.")
+            with torch.no_grad():
+                current_prompt = self.network.e_prompt.prompt[:, task_idx].detach().clone()
+                past_prompts_mean = self.network.e_prompt.prompt[:, 0:task_idx].detach().clone().mean(dim=1)
+                new_prompt = (1 - prompt_momentum) * current_prompt + prompt_momentum * past_prompts_mean
+                self.network.e_prompt.prompt[:, task_idx].copy_(new_prompt)
+        if task_idx > 0:
+            self._train_classifier_alignment(task_idx)
+        
+        save_path = self.kwargs.get('save_path', './output/norga/')
+        save_dir = os.path.join(save_path, 'checkpoints')
+        if not os.path.exists(save_dir): os.makedirs(save_dir)
+        checkpoint_path = os.path.join(save_dir, f'task{task_idx}_peft_checkpoint.pth')
+        torch.save(self.network.state_dict(), checkpoint_path)
+        print(f"================ PEFT Model for Task {task_idx} saved to {checkpoint_path} ================")
+
+    # -------------------------------------------------------------------
+    # Shared Helper Methods
+    # -------------------------------------------------------------------
+    def _orth_loss(self, features, targets):
+            """
+            Calculates orthogonality loss to encourage feature separation.
+            """
+            if not self.cls_mean: # Only apply after first task
+                return 0.
+            
+            # Combine stored class means with current batch features
+            sample_mean = torch.stack(list(self.cls_mean.values()), dim=0).to(self.device)
+            M = torch.cat([sample_mean, features], dim=0)
+            
+            # Calculate similarity matrix and cross-entropy loss against identity
+            sim = torch.matmul(M, M.t()) / 0.8 # Temperature scaling
+            loss = F.cross_entropy(sim, torch.arange(sim.shape[0]).long().to(self.device))
+            return loss
 
     @torch.no_grad()
     def _compute_mean_and_cov(self, data_loader, task_id):
@@ -460,7 +617,7 @@ class NoRGA(Finetune):
             # Get pre-logit features from the network
             # Note: 'train=True' is used here to match the feature distribution during training
             features = self.network(images, task_id=task_id, train=True)['pre_logits']
-            
+
             # 2. Group the extracted features by their class label.
             for i in range(len(labels)):
                 l = labels[i].item()
@@ -531,18 +688,3 @@ class NoRGA(Finetune):
                 all_labels.extend([cls_id] * num_samples_per_cls)
         
         return torch.cat(all_data, dim=0), torch.tensor(all_labels).long().to(self.device)
-
-    def get_parameters(self, config):
-        """
-        Provides parameter groups to the optimizer.
-        """
-        if self.kwargs.get('larger_prompt_lr', False):
-            print("Using a larger learning rate for prompt parameters.")
-            prompt_params = [p for n, p in self.network.named_parameters() if 'prompt' in n and p.requires_grad]
-            other_params = [p for n, p in self.network.named_parameters() if 'prompt' not in n and p.requires_grad]
-            
-            main_lr = config['optimizer']['kwargs']['lr']
-            param_groups = [{'params': prompt_params, 'lr': main_lr}, {'params': other_params, 'lr': main_lr * 0.1}]
-            return param_groups
-        else:
-            return self.network.parameters()
