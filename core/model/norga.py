@@ -593,20 +593,36 @@ class NoRGA(Finetune):
     # Shared Helper Methods
     # -------------------------------------------------------------------
     def _orth_loss(self, features, targets):
-            """
-            Calculates orthogonality loss to encourage feature separation.
-            """
-            if not self.cls_mean: # Only apply after first task
-                return 0.
-            
-            # Combine stored class means with current batch features
-            sample_mean = torch.stack(list(self.cls_mean.values()), dim=0).to(self.device)
-            M = torch.cat([sample_mean, features], dim=0)
-            
-            # Calculate similarity matrix and cross-entropy loss against identity
-            sim = torch.matmul(M, M.t()) / 0.8 # Temperature scaling
-            loss = F.cross_entropy(sim, torch.arange(sim.shape[0]).long().to(self.device))
-            return loss
+        if not self.cls_mean or self.task_idx == 0:
+            return 0.
+    
+        # 只考虑当前任务类别的特征
+        current_classes = self.class_mask[self.task_idx]
+        mask = torch.isin(targets, torch.tensor(current_classes).to(self.device))
+        features = features[mask]
+    
+        if features.nelement() == 0:
+            return 0.
+    
+        # 计算类内紧凑性和类间分离性
+        intra_loss = 0.
+        for cls in current_classes:
+            cls_features = features[targets[mask] == cls]
+            if len(cls_features) > 1:
+                intra_loss += torch.var(cls_features, dim=0).mean()
+    
+        # 添加类间分离约束
+        inter_loss = 0.
+        if len(current_classes) > 1:
+            means = []
+            for cls in current_classes:
+                means.append(features[targets[mask] == cls].mean(dim=0))
+        
+            means = torch.stack(means)
+            center = means.mean(dim=0)
+            inter_loss = F.mse_loss(means, center.expand_as(means))
+    
+        return intra_loss + inter_loss
 
     @torch.no_grad()
     def _compute_mean_and_cov(self, data_loader, task_id):
