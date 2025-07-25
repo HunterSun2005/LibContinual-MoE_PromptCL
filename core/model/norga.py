@@ -566,10 +566,19 @@ class NoRGA(Finetune):
         if prompt_momentum > 0 and task_idx > 0:
             print(f"Applying prompt momentum ({prompt_momentum}) to Task {task_idx} prompts.")
             with torch.no_grad():
-                current_prompt = self.network.e_prompt.prompt[:, task_idx].detach().clone()
-                past_prompts_mean = self.network.e_prompt.prompt[:, 0:task_idx].detach().clone().mean(dim=1)
-                new_prompt = (1 - prompt_momentum) * current_prompt + prompt_momentum * past_prompts_mean
-                self.network.e_prompt.prompt[:, task_idx].copy_(new_prompt)
+                use_prefix = self.kwargs.get('use_prefix_tune_for_e_prompt', False)
+                if use_prefix:
+                    # Shape: [layers, 2, pool_size, length, ...] -> Index on dim 2
+                    current_prompt = self.network.e_prompt.prompt[:, :, task_idx].detach().clone()
+                    past_prompts_mean = self.network.e_prompt.prompt[:, :, 0:task_idx].detach().clone().mean(dim=2)
+                    new_prompt = (1 - prompt_momentum) * current_prompt + prompt_momentum * past_prompts_mean
+                    self.network.e_prompt.prompt[:, :, task_idx].copy_(new_prompt)
+                else:
+                    # Shape: [layers, pool_size, length, ...] -> Index on dim 1
+                    current_prompt = self.network.e_prompt.prompt[:, task_idx].detach().clone()
+                    past_prompts_mean = self.network.e_prompt.prompt[:, 0:task_idx].detach().clone().mean(dim=1)
+                    new_prompt = (1 - prompt_momentum) * current_prompt + prompt_momentum * past_prompts_mean
+                    self.network.e_prompt.prompt[:, task_idx].copy_(new_prompt)
         if task_idx > 0:
             self._train_classifier_alignment(task_idx)
         

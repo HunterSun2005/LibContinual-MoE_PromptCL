@@ -51,6 +51,7 @@ classifier:
     task_num: 10
     save_path: './output/norga_cifar100/' # 日志和模型检查点的保存路径
     train_tii_only: False       # 是否只训练TII部分
+    use_prefix_tune_for_e_prompt: True
     
     # --- 使用 timm.create_model 创建模型所需的名称 ---
     model_name: vit_base_patch16_224_dino             # 可训练模型
