@@ -599,21 +599,21 @@ class NoRGA(Finetune):
     # Shared Helper Methods
     # -------------------------------------------------------------------
     def _orth_loss(self, features, targets):
-            """
-            Calculates orthogonality loss to encourage feature separation.
-            """
-            if not self.cls_mean: # Only apply after first task
-                sim = torch.matmul(features, features.t()) / 0.8
-                loss = F.cross_entropy(sim, torch.arange(features.shape[0]).long().to(self.device))
-                return loss
-            
-            # Combine stored class means with current batch features
-            sample_mean = torch.stack(list(self.cls_mean.values()), dim=0).to(self.device)
-            M = torch.cat([sample_mean, features], dim=0)
-            # Calculate similarity matrix and cross-entropy loss against identity
-            sim = torch.matmul(M, M.t()) / 0.8 # Temperature scaling
-            loss = F.cross_entropy(sim, torch.arange(sim.shape[0]).long().to(self.device))
+        """
+        Calculates orthogonality loss to encourage feature separation.
+        """
+        if not self.cls_mean: # Only apply after first task
+            sim = torch.matmul(features, features.t()) / 0.8
+            loss = F.cross_entropy(sim, torch.arange(features.shape[0]).long().to(self.device))
             return loss
+        
+        # Combine stored class means with current batch features
+        sample_mean = torch.stack(list(self.cls_mean.values()), dim=0).to(self.device)
+        M = torch.cat([sample_mean, features], dim=0)
+        # Calculate similarity matrix and cross-entropy loss against identity
+        sim = torch.matmul(M, M.t()) / 0.8 # Temperature scaling
+        loss = F.cross_entropy(sim, torch.arange(sim.shape[0]).long().to(self.device))
+        return loss
 
     @torch.no_grad()
     def _compute_mean_and_cov(self, data_loader, task_id):
