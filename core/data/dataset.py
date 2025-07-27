@@ -24,6 +24,32 @@ class ContinualDatasets:
         self.num_workers = num_workers
         self.config = config
         self.dataset = dataset
+        # 1. 获取所有类别的索引
+        all_classes = list(self.cls_map.keys())
+
+        # 2. 根据配置决定类别顺序 (优先使用固定顺序, 否则根据seed随机打乱)
+        if 'class_order' in self.config:
+            # print("Using fixed class order from config.")
+            class_order = self.config['class_order']
+        else:
+            # print(f"Randomizing class order with seed: {self.config['seed']}")
+            # 使用带seed的随机状态机来保证可复现性
+            rng = np.random.RandomState(self.config['seed'])
+            class_order = rng.permutation(all_classes)
+
+        # 3. 根据随机化的顺序, 将类别分配给每个任务
+        self.task_cls_map = {}
+        current_class_idx = 0
+        for i in range(self.task_num):
+            if i == 0:
+                num_classes_in_task = self.init_cls_num
+            else:
+                num_classes_in_task = self.inc_cls_num
+            
+            # 从随机排序的列表中切片
+            task_classes = class_order[current_class_idx : current_class_idx + num_classes_in_task]
+            self.task_cls_map[i] = sorted(list(task_classes)) # 排序以保持一致性
+            current_class_idx += num_classes_in_task
 
         if self.dataset == 'binary_cifar100':
             datasets.CIFAR100(self.data_root, download = True)
@@ -79,17 +105,17 @@ class ContinualDatasets:
         else:
 
             for i in range(self.task_num):
-
-                start_idx = 0 if i == 0 else (self.init_cls_num + (i-1) * self.inc_cls_num)
-                end_idx = start_idx + (self.init_cls_num if i ==0 else self.inc_cls_num)
+                task_classes = self.task_cls_map[i]
+                single_dataset = SingleDataset(self.dataset, self.data_root, self.mode, self.cls_map, self.trfms, class_list=task_classes)
                 self.dataloaders.append(DataLoader(
-                    SingleDataset(self.dataset, self.data_root, self.mode, self.init_cls_num, self.inc_cls_num, self.cls_map, self.trfms, start_idx, end_idx),
+                    single_dataset,
                     shuffle = True,
                     batch_size = self.batchsize,
                     drop_last = False,
                     num_workers = self.num_workers,
                     pin_memory=False
                 ))
+                self.dataloaders[i].task_cls_map = self.task_cls_map
 
     def get_loader(self, task_idx):
         assert task_idx >= 0 and task_idx < self.task_num
@@ -230,16 +256,13 @@ class ImbalancedDatasets(ContinualDatasets):
         return img_num_per_cls
 
 class SingleDataset(Dataset):
-    def __init__(self, dataset, data_root, mode, init_cls_num, inc_cls_num, cls_map, trfms, start_idx=-1, end_idx=-1, init=True):
+    def __init__(self, dataset, data_root, mode, cls_map, trfms, class_list=None, init=True):
         super().__init__()
         self.dataset = dataset
         self.data_root = data_root
         self.mode = mode
-        self.init_cls_num = init_cls_num
-        self.inc_cls_num = inc_cls_num
         self.cls_map = cls_map
-        self.start_idx = start_idx
-        self.end_idx = end_idx
+        self.class_list = class_list
         self.trfms = trfms
 
         if init:
@@ -279,7 +302,7 @@ class SingleDataset(Dataset):
 
             for data, label in zip(load_data['data'], load_data['fine_labels']):
 
-                if label in range(self.start_idx, self.end_idx):
+                if label in self.class_list:
                     r = data[:1024].reshape(32, 32)
                     g = data[1024:2048].reshape(32, 32)
                     b = data[2048:].reshape(32, 32)
@@ -292,8 +315,10 @@ class SingleDataset(Dataset):
 
         else:
 
-            for id in range(self.start_idx, self.end_idx):
-                img_list = [self.cls_map[id] + '/' + pic_path for pic_path in os.listdir(os.path.join(self.data_root, self.mode, self.cls_map[id]))]
+            for id in self.class_list:
+                class_name = self.cls_map[id]
+                class_path = os.path.join(self.data_root, self.mode, class_name)
+                img_list = [os.path.join(class_name, pic_path) for pic_path in os.listdir(class_path)]
                 imgs.extend(img_list)
                 labels.extend([id for _ in range(len(img_list))])
                 labels_name.append(self.cls_map[id])

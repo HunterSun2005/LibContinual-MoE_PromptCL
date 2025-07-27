@@ -343,11 +343,7 @@ class NoRGA(Finetune):
         self.cls_mean = {}
         self.cls_cov = {}
         self.target_task_map = None
-        self.class_mask = {}
-        for i in range(kwargs['task_num']):
-            start_idx = 0 if i == 0 else (kwargs['init_cls_num'] + (i - 1) * kwargs['inc_cls_num'])
-            end_idx = start_idx + (kwargs['init_cls_num'] if i == 0 else kwargs['inc_cls_num'])
-            self.class_mask[i] = list(range(start_idx, end_idx))
+        self.class_mask = None
             
     def before_task(self, task_idx, buffer, train_loader, test_loaders):
         """
@@ -358,6 +354,8 @@ class NoRGA(Finetune):
         self.network = self.network.to(self.device)
         if self.original_model:
             self.original_model = self.original_model.to(self.device)
+
+        self.class_mask = train_loader.task_cls_map
         
         # Store class mask and task map for use in inference
         self.target_task_map = {v: k for k, v_list in self.class_mask.items() for v in v_list}
@@ -502,6 +500,8 @@ class NoRGA(Finetune):
                 self.original_model.load_state_dict(tii_state_dict)
             else:
                 print(f"Warning: TII checkpoint for Task {task_id} not found at {checkpoint_path}. Using previous TII model.")
+        else:
+            print("Warning: TII checkpoint not set. Check your config.")
 
     def _transfer_prompts(self, task_id):
         if task_id > 0:
@@ -528,9 +528,15 @@ class NoRGA(Finetune):
         output = self.network(x, task_id=self.task_idx, prompt_id=prompt_id, train=True)
         logits, features_curr = output['logits'], output['pre_logits']
         # --- Loss Calculation ---
-        loss_c = self.loss_cls(logits, y)
+        mask = self.class_mask[self.task_idx]
+        not_mask = np.setdiff1d(np.arange(self.num_class), mask)
+        not_mask = torch.tensor(not_mask, dtype=torch.int64).to(self.device)
+        masked_logits = logits.index_fill(dim=1, index=not_mask, value=float('-inf'))
+
+        loss_c = self.loss_cls(masked_logits, y)
         loss_o = self._orth_loss(features_curr, y)
         total_loss = loss_c + self.orth_lambda * loss_o
+
         pred = torch.argmax(logits, dim=1)
         acc = torch.sum(pred == y).item()
         return pred, acc / x.size(0), total_loss
@@ -597,12 +603,13 @@ class NoRGA(Finetune):
             Calculates orthogonality loss to encourage feature separation.
             """
             if not self.cls_mean: # Only apply after first task
-                return 0.
+                sim = torch.matmul(features, features.t()) / 0.8
+                loss = F.cross_entropy(sim, torch.arange(features.shape[0]).long().to(self.device))
+                return loss
             
             # Combine stored class means with current batch features
             sample_mean = torch.stack(list(self.cls_mean.values()), dim=0).to(self.device)
             M = torch.cat([sample_mean, features], dim=0)
-            
             # Calculate similarity matrix and cross-entropy loss against identity
             sim = torch.matmul(M, M.t()) / 0.8 # Temperature scaling
             loss = F.cross_entropy(sim, torch.arange(sim.shape[0]).long().to(self.device))

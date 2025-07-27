@@ -50,8 +50,7 @@ classifier:
     inc_cls_num: 10                 # 每个增量任务中新增的类别数量
     task_num: 10
     save_path: './output/norga_cifar100/' # 日志和模型检查点的保存路径
-    trained_original_model_path: './output/norga_cifar100/checkpoints/'
-    train_tii_only: False       # 是否只训练TII部分
+    train_tii_only: True       # 是否只训练TII部分
     use_prefix_tune_for_e_prompt: True
     
     # --- 使用 timm.create_model 创建模型所需的名称 ---
@@ -63,8 +62,8 @@ classifier:
     mlp_structure: [2]
 
     # --- CA 超参数  ---
-    crct_epochs: 80
-    ca_lr: 0.005
+    crct_epochs: 60
+    ca_lr: 0.025
     weight_decay: 5e-4
     prompt_momentum: 0.01
     reg: 0.01
@@ -90,7 +89,7 @@ classifier:
 optimizer:
   name: Adam                   # 优化器
   kwargs:
-    lr: 0.015                   # 基础学习率
+    lr: 0.00025                  # 基础学习率
     weight_decay: 0.0           # 权重衰减
     eps: 1e-8                   # AdamW优化器的常数, 防止分母为零
     betas: [0.9, 0.999]         # AdamW优化器的beta1和beta2参数
@@ -101,7 +100,6 @@ lr_scheduler:
     milestones: [10]            # 在哪些 epoch 进行学习率衰减
     gamma: 0.1                  # 学习率衰减率
     # decay_t: 30
-    # decay_rate: 0.1
     # warmup_lr_init: 1e-6
     # warmup_t: 0
     # noise_range_t: None
@@ -123,5 +121,5 @@ testing_times: 1                # 任务结束后，在测试集上重复测试�
 seed: 42                        # 随机种子
 deterministic: True             # 是否使用确定性算法
 n_gpu: 1                        # 使用的 GPU 数量
-device_ids: [0]                 # 使用的 GPU 设备 ID
+device_ids: [1]                 # 使用的 GPU 设备 ID
 save_path: './output/norga_cifar100/' # 日志的保存路径
