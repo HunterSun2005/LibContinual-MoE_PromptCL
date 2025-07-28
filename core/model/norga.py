@@ -622,35 +622,28 @@ class NoRGA(Finetune):
         """
         self.network.eval()
         print("Computing feature statistics for new classes...")
-        
         features_per_class = {}
-
-        # 1. Iterate through the dataloader and extract features for each image.
+        feature_extractor = self.original_model if not self.train_tii_only else self.network
         for batch in data_loader:
             images = batch['image'].to(self.device)
             labels = batch['label'].to(self.device)
-            
             # Get pre-logit features from the network
-            # Note: 'train=True' is used here to match the feature distribution during training
-            features = self.network(images, task_id=task_id, train=True)['pre_logits']
-
-            # 2. Group the extracted features by their class label.
+            features_output = feature_extractor.forward_features(images)
+            features = features_output['x'] if isinstance(features_output, dict) else features_output
+            # We need the pre-logit features, which for ViT is the [CLS] token's feature
+            pre_logits = features[:, 0]
             for i in range(len(labels)):
                 l = labels[i].item()
                 if l not in features_per_class:
                     features_per_class[l] = []
                 # Detach and move to CPU to save GPU memory
-                features_per_class[l].append(features[i].cpu())
+                features_per_class[l].append(pre_logits[i].cpu())
 
-        # 3. For each class, concatenate the features and compute statistics.
         for cls_id, features_list in features_per_class.items():
             if cls_id in self.cls_mean: continue # Skip if already computed
-            
             features_tensor = torch.stack(features_list)
-            
             self.cls_mean[cls_id] = features_tensor.mean(dim=0)
             self.cls_cov[cls_id] = torch.cov(features_tensor.T) + (torch.eye(features_tensor.shape[1]) * 1e-4)
-            
         print("Statistics computation complete.")
 
     def _train_classifier_alignment(self, task_id):
