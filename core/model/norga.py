@@ -568,7 +568,7 @@ class NoRGA(Finetune):
         print(f'Post-processing for PEFT Task {task_idx + 1}')
         print('-' * 20)
         self._compute_mean_and_cov(train_loader, task_idx)
-        prompt_momentum = self.kwargs.get('prompt_momentum', 0.01)
+        prompt_momentum = self.kwargs.get('prompt_momentum', 0.1)
         if prompt_momentum > 0 and task_idx > 0:
             print(f"Applying prompt momentum ({prompt_momentum}) to Task {task_idx} prompts.")
             with torch.no_grad():
